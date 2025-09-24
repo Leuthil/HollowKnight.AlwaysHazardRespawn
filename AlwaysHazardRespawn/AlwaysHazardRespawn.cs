@@ -1,81 +1,83 @@
-using Modding;
 using System;
 using UnityEngine;
 
 namespace AlwaysHazardRespawn
 {
-    public class AlwaysHazardRespawn : Mod, ITogglableMod
+    public class AlwaysHazardRespawn
     {
-        public override string GetVersion() => "0.1.0.0";
-
         private const string DYNAMIC_HAZARD_RESPAWN_MARKER_NAME = "__DYNAMIC_HAZARD_RESPAWN__";
         private const string RESPAWN_POINT_TAG = "RespawnPoint";
 
-        private static HazardRespawnData _hazardRespawnData;
+        private readonly IModClient modClient;
 
-        private static string _prevRespawnSceneName;
-        private static string _prevRespawnMarkerName;
+        private RespawnData dynamicHazardRespawnData;
+        private RespawnData originalRespawnData;
 
-        private static bool _isRespawningAfterDeath;
-        private static bool _isAlteringRespawnData;
+        private bool isRespawningAfterDeath;
 
-        private static GameObject _dynamicHazardRespawnMarkerGO;
+        private GameObject dynamicHazardRespawnMarkerGO;
+        private RespawnMarker dynamicHazardRespawnMarker;
 
-        public override void Initialize()
+        public AlwaysHazardRespawn(IModClient modClient)
         {
-            LogDebug("Initializing AlwaysHazardRespawn");
+            this.modClient = modClient ?? throw new ArgumentNullException(nameof(modClient));
+        }
 
-            ModHooks.BeforePlayerDeadHook += OnBeforePlayerDeadHook;
-            ModHooks.SetPlayerVector3Hook += OnSetPlayerVector3Hook;
-            ModHooks.SetPlayerStringHook += OnSetPlayerStringHook;
-            ModHooks.BeforeSavegameSaveHook += OnBeforeSavegameSaveHook;
-            ModHooks.SavegameSaveHook += OnAfterSavegameSaveHook;
-            ModHooks.AfterSavegameLoadHook += OnAfterSavegameLoadHook;
-            GameManager.instance.OnFinishedSceneTransition += OnFinishedSceneTransition;
+        public void Load()
+        {
+            modClient.LogDebug("Loading AlwaysHazardRespawn");
+
+            modClient.OnBeforeSavegameSave += OnBeforeSavegameSave;
+            modClient.OnAfterSavegameSave += OnAfterSavegameSave;
+            modClient.OnAfterSavegameLoad += OnAfterSavegameLoad;
+            modClient.OnHazardRespawnLocationSet += OnHazardRespawnLocationSet;
+            modClient.OnBeforePlayerDead += OnBeforePlayerDead;
+            modClient.OnFinishedSceneTransition += OnFinishedSceneTransition;
 
             // Create a GameObject to serve as the dynamic hazard respawn marker.
             // During respawn, the game looks for all GameObjects with the "RespawnPoint" tag in the scene (GameObject.FindGameObjectsWithTag("RespawnPoint")).
             // From those, it finds the one with the matching name (gameObject.name == PlayerData.instance.GetString("respawnMarkerName")).
-            _dynamicHazardRespawnMarkerGO = new GameObject(DYNAMIC_HAZARD_RESPAWN_MARKER_NAME);
+            dynamicHazardRespawnMarkerGO = new GameObject(DYNAMIC_HAZARD_RESPAWN_MARKER_NAME);
             // Tag it as a respawn point so that the game recognizes it as such.
-            _dynamicHazardRespawnMarkerGO.tag = RESPAWN_POINT_TAG;
-            GameObject.DontDestroyOnLoad(_dynamicHazardRespawnMarkerGO);
+            dynamicHazardRespawnMarkerGO.tag = RESPAWN_POINT_TAG;
+            // Add RespawnMarker component has its used in spawning (prevents issues and contains the facing direction).
+            dynamicHazardRespawnMarker = dynamicHazardRespawnMarkerGO.AddComponent<RespawnMarker>();
+            GameObject.DontDestroyOnLoad(dynamicHazardRespawnMarkerGO);
         }
 
         public void Unload()
         {
-            LogDebug("Unloading AlwaysHazardRespawn");
+            modClient.LogDebug("Unloading AlwaysHazardRespawn");
+
+            modClient.OnBeforeSavegameSave -= OnBeforeSavegameSave;
+            modClient.OnAfterSavegameSave -= OnAfterSavegameSave;
+            modClient.OnAfterSavegameLoad -= OnAfterSavegameLoad;
+            modClient.OnHazardRespawnLocationSet -= OnHazardRespawnLocationSet;
+            modClient.OnBeforePlayerDead -= OnBeforePlayerDead;
+            modClient.OnFinishedSceneTransition -= OnFinishedSceneTransition;
 
             // If we are in the middle of a respawn, restore the respawn data to avoid corrupting future saves.
             // This shouldn't happen since you can't go to the menu during death, but just in case.
-            if (_isRespawningAfterDeath)
+            if (isRespawningAfterDeath)
             {
                 RestoreRespawnData();
             }
 
-            ModHooks.BeforePlayerDeadHook -= OnBeforePlayerDeadHook;
-            ModHooks.SetPlayerVector3Hook -= OnSetPlayerVector3Hook;
-            ModHooks.SetPlayerStringHook -= OnSetPlayerStringHook;
-            ModHooks.BeforeSavegameSaveHook -= OnBeforeSavegameSaveHook;
-            ModHooks.SavegameSaveHook -= OnAfterSavegameSaveHook;
-            GameManager.instance.OnFinishedSceneTransition -= OnFinishedSceneTransition;
-
-            if (_dynamicHazardRespawnMarkerGO != null)
+            if (dynamicHazardRespawnMarkerGO != null)
             {
-                GameObject.Destroy(_dynamicHazardRespawnMarkerGO);
-                _dynamicHazardRespawnMarkerGO = null;
+                GameObject.Destroy(dynamicHazardRespawnMarkerGO);
+                dynamicHazardRespawnMarkerGO = null;
             }
 
-            _hazardRespawnData = null;
-            _prevRespawnSceneName = null;
-            _prevRespawnMarkerName = null;
-            _isRespawningAfterDeath = false;
-            _isAlteringRespawnData = false;
+            dynamicHazardRespawnMarker = null;
+            dynamicHazardRespawnData = null;
+            originalRespawnData = null;
+            isRespawningAfterDeath = false;
         }
 
-        private void OnBeforeSavegameSaveHook(SaveGameData data)
+        private void OnBeforeSavegameSave()
         {
-            if (!_isRespawningAfterDeath)
+            if (!isRespawningAfterDeath)
             {
                 return;
             }
@@ -84,9 +86,9 @@ namespace AlwaysHazardRespawn
             RestoreRespawnData();
         }
 
-        private void OnAfterSavegameSaveHook(int saveSlot)
+        private void OnAfterSavegameSave()
         {
-            if (!_isRespawningAfterDeath)
+            if (!isRespawningAfterDeath)
             {
                 return;
             }
@@ -95,62 +97,29 @@ namespace AlwaysHazardRespawn
             OverwriteRespawnData();
         }
 
-        private void OnAfterSavegameLoadHook(SaveGameData data)
+        private void OnAfterSavegameLoad(PlayerData playerData)
         {
             // Preserve the original spawn data so we can restore it when necessary.
-            _prevRespawnSceneName = data.playerData.GetString("respawnScene");
-            _prevRespawnMarkerName = data.playerData.GetString("respawnMarkerName");
+            PreserveOriginalRespawnData(playerData);
 
-            LogDebug($"Preserving prevRespawnScene={_prevRespawnSceneName}, prevRespawnMarkerName={_prevRespawnMarkerName}");
+            modClient.LogDebug($"Preserving prevRespawnScene={originalRespawnData.SceneName}, prevRespawnMarkerName={originalRespawnData.MarkerName}");
         }
 
-        private Vector3 OnSetPlayerVector3Hook(string name, Vector3 orig)
+        private void OnHazardRespawnLocationSet(Vector3 hazardRespawnLocation, bool facingRight)
         {
-            switch (name)
-            {
-                // Capture the hazard respawn data whenever it is set.
-                case "hazardRespawnLocation":
-                    CaptureRespawnData(orig);
-                    break;
-                default:
-                    break;
-            }
-            return orig;
+            // Capture the hazard respawn data whenever it is set.
+            CaptureHazardRespawnData(hazardRespawnLocation, facingRight);
         }
 
-        private string OnSetPlayerStringHook(string name, string orig)
-        {
-            // During respawn data hijacking, ignore changes.
-            if (_isAlteringRespawnData)
-            {
-                return orig;
-            }
-
-            switch (name)
-            {
-                // Preserve the original respawn data so we can restore it when necessary.
-                case "respawnScene":
-                    _prevRespawnSceneName = orig;
-                    LogDebug($"Preserving prevRespawnScene: {_prevRespawnSceneName}");
-                    break;
-                case "respawnMarkerName":
-                    _prevRespawnMarkerName = orig;
-                    LogDebug($"Preserving prevRespawnMarkerName: {_prevRespawnMarkerName}");
-                    break;
-            }
-
-            return orig;
-        }
-
-        private void OnBeforePlayerDeadHook()
+        private void OnBeforePlayerDead()
         {
             // Do not consider this death if we don't have hazard respawn data. This should rarely be the case.
-            if (_hazardRespawnData == null)
+            if (dynamicHazardRespawnData == null)
             {
                 return;
             }
 
-            _isRespawningAfterDeath = true;
+            isRespawningAfterDeath = true;
 
             // Overwrite respawn data to hijack the death respawn.
             OverwriteRespawnData();
@@ -158,53 +127,106 @@ namespace AlwaysHazardRespawn
 
         private void OnFinishedSceneTransition()
         {
-            if (_isRespawningAfterDeath)
+            if (isRespawningAfterDeath)
             {
-                _isRespawningAfterDeath = false;
+                isRespawningAfterDeath = false;
                 // Restore respawn data after the respawn is complete. This is important to avoid corrupting future saves.
                 RestoreRespawnData();
             }
         }
 
-        private void CaptureRespawnData(Vector3 hazardRespawnLocation)
+        private void PreserveOriginalRespawnData(PlayerData playerData)
         {
-            LogDebug($"Capturing hazard respawn scene and location: {GameManager.instance.sceneName}, {hazardRespawnLocation}");
-
-            _hazardRespawnData = new HazardRespawnData
+            originalRespawnData = new RespawnData
             {
+                MapZone = playerData.mapZone,
+                SceneName = playerData.respawnScene,
+                MarkerName = playerData.respawnMarkerName,
+                FacingRight = playerData.respawnFacingRight,
+                SpawnType = playerData.respawnType,
+            };
+        }
+
+        private void CaptureHazardRespawnData(Vector3 hazardRespawnLocation, bool facingRight)
+        {
+            modClient.LogDebug($"Capturing hazard respawn scene and location: {GameManager.instance.sceneName}, {hazardRespawnLocation}, {facingRight}");
+
+            dynamicHazardRespawnData = new RespawnData
+            {
+                MapZone = GameManager.instance.sm.mapZone,
                 SceneName = GameManager.instance.sceneName,
-                Location = hazardRespawnLocation
+                MarkerName = DYNAMIC_HAZARD_RESPAWN_MARKER_NAME,
+                FacingRight = facingRight,
+                SpawnType = 0, // Normal spawn type.
             };
 
             // Move the dynamic hazard respawn marker GameObject to the captured location.
-            _dynamicHazardRespawnMarkerGO.transform.position = _hazardRespawnData.Location;
+            dynamicHazardRespawnMarkerGO.transform.position = hazardRespawnLocation;
+            dynamicHazardRespawnMarker.respawnFacingRight = facingRight;
         }
 
         private void OverwriteRespawnData()
         {
-            LogDebug($"Overwriting respawn data prevRespawnScene={_prevRespawnSceneName}, prevRespawnMarkerName={_prevRespawnMarkerName}" +
-                $" with newRespawnScene={_hazardRespawnData.SceneName}, newRespawnMarkerName={DYNAMIC_HAZARD_RESPAWN_MARKER_NAME}");
+            if (dynamicHazardRespawnData == null || PlayerData.instance?.respawnMarkerName == DYNAMIC_HAZARD_RESPAWN_MARKER_NAME)
+            {
+                // No hazard respawn data or already hijacking respawn data; nothing to do.
+                return;
+            }
 
-            _isAlteringRespawnData = true;
-            PlayerData.instance.SetString("respawnScene", _hazardRespawnData.SceneName);
-            PlayerData.instance.SetString("respawnMarkerName", DYNAMIC_HAZARD_RESPAWN_MARKER_NAME);
-            _isAlteringRespawnData = false;
+            modClient.LogDebug($"Overwriting respawn data prevRespawnScene={PlayerData.instance.respawnScene}, prevRespawnMarkerName={PlayerData.instance.respawnMarkerName}" +
+                $" with newRespawnScene={dynamicHazardRespawnData.SceneName}, newRespawnMarkerName={DYNAMIC_HAZARD_RESPAWN_MARKER_NAME}");
+
+            PreserveOriginalRespawnData(PlayerData.instance);
+            SetPlayerDataRespawnData(PlayerData.instance, dynamicHazardRespawnData);
+        }
+
+        private void SetPlayerDataRespawnData(PlayerData playerData, RespawnData respawnData)
+        {
+            if (playerData == null || respawnData == null)
+            {
+                return;
+            }
+
+            playerData.mapZone = respawnData.MapZone;
+            playerData.respawnScene = respawnData.SceneName;
+            playerData.respawnMarkerName = respawnData.MarkerName;
+            playerData.respawnFacingRight = respawnData.FacingRight;
+            playerData.respawnType = respawnData.SpawnType;
         }
 
         private void RestoreRespawnData()
         {
-            LogDebug($"Restoring respawn data to prevRespawnScene={_prevRespawnSceneName}, prevRespawnMarkerName={_prevRespawnMarkerName}");
+            if (originalRespawnData == null)
+            {
+                // No original respawn data to restore.
+                return;
+            }
 
-            _isAlteringRespawnData = true;
-            PlayerData.instance.SetString("respawnScene", _prevRespawnSceneName);
-            PlayerData.instance.SetString("respawnMarkerName", _prevRespawnMarkerName);
-            _isAlteringRespawnData = false;
+            modClient.LogDebug($"Restoring respawn data to prevRespawnScene={originalRespawnData.SceneName}, prevRespawnMarkerName={originalRespawnData.MarkerName}");
+
+            SetPlayerDataRespawnData(PlayerData.instance, originalRespawnData);
         }
 
-        private class HazardRespawnData
+        private class RespawnData
         {
+            public GlobalEnums.MapZone MapZone;
             public string SceneName;
-            public Vector3 Location;
+            public string MarkerName;
+            public bool FacingRight;
+            public int SpawnType;
         }
+    }
+
+    public interface IModClient
+    {
+        void Log(string msg);
+        void LogDebug(string msg);
+
+        event Action OnBeforeSavegameSave;
+        event Action OnAfterSavegameSave;
+        event Action<PlayerData> OnAfterSavegameLoad;
+        event Action<Vector3, bool> OnHazardRespawnLocationSet;
+        event Action OnBeforePlayerDead;
+        event Action OnFinishedSceneTransition;
     }
 }

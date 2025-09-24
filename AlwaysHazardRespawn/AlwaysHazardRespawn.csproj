@@ -2,15 +2,11 @@
   <PropertyGroup>
     <TargetFramework>net472</TargetFramework>
     <AssemblyTitle>AlwaysHazardRespawn</AssemblyTitle>
-    <AssemblyVersion>0.1.0.0</AssemblyVersion>
+    <AssemblyVersion>0.2.0.0</AssemblyVersion>
     <DebugType>portable</DebugType>
     <Copyright>Copyright © 2025</Copyright>
     <OutputPath>bin\$(Configuration)\</OutputPath>
     <LangVersion>latest</LangVersion>
-    <!--
-            Update this to be the `Managed` folder of your Hollow Knight install in real mods,
-            or to point to the nescessary assemblies referenced by this mod.
-        -->
     <HollowKnightRefs>../../HollowKnightManaged/</HollowKnightRefs>
   </PropertyGroup>
   <ItemGroup>
@@ -22,6 +18,12 @@
     </Reference>
     <Reference Include="MMHOOK_PlayMaker">
       <HintPath>$(HollowKnightRefs)\MMHOOK_PlayMaker.dll</HintPath>
+    </Reference>
+    <Reference Include="BepInEx">
+      <HintPath>$(HollowKnightRefs)\BepInEx.dll</HintPath>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(HollowKnightRefs)\0Harmony.dll</HintPath>
     </Reference>
     <Reference Include="Newtonsoft.Json">
       <HintPath>$(HollowKnightRefs)\Newtonsoft.Json.dll</HintPath>
